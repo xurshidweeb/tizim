@@ -1,0 +1,346 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  SUPER_ADMIN
+  BRANCH_HEAD
+  ADMIN
+  TEACHER
+  STUDENT
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  LEFT
+}
+
+enum StudentType {
+  PAID
+  STATE_RESERVE
+}
+
+enum OrderStatus {
+  PENDING
+  APPROVED
+  DELIVERED
+  CANCELLED
+}
+
+enum ScheduleType {
+  ODD
+  EVEN
+  EVERYDAY
+  CUSTOM
+}
+
+enum TransactionType {
+  MONTHLY_110_PASSED
+  ATTENDANCE_BONUS
+  REFERRAL_BONUS
+  SHOP_ORDER
+  SHOP_REFUND
+  BALANCE_RESET_ON_LEAVE
+  MANUAL_ADJUSTMENT
+}
+
+enum PenaltyBonusType {
+  PENALTY
+  BONUS
+}
+
+model Branch {
+  id         String   @id @default(cuid())
+  name       String
+  code       String   @unique // e.g. URG, CHIL, YUN
+  address    String?
+  phone      String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  users      User[]
+  groups     Group[]
+  orders     Order[]
+  rules      StaffPenaltyBonusRule[]
+}
+
+model User {
+  id            String       @id @default(cuid())
+  branchId      String?      // NULL for SUPER_ADMIN
+  branch        Branch?      @relation(fields: [branchId], references: [id])
+  login         String       @unique // e.g. URG-0231
+  passwordHash  String
+  fullName      String
+  phone         String?
+  role          Role         @default(STUDENT)
+  status        UserStatus   @default(ACTIVE)
+  studentType   StudentType? @default(PAID) // for students
+  coinBalance   Int          @default(0)   // current spendable coins
+  avatarUrl     String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // Teacher relations
+  taughtGroups         Group[]                 @relation("TeacherGroups")
+  recordedAttendances  AttendanceRecord[]      @relation("TeacherRecordedAttendances")
+  
+  // Student relations
+  studentGroups        StudentGroup[]
+  attendances          AttendanceRecord[]      @relation("StudentAttendances")
+  monthlyCycles        MonthlyCycle[]
+  coinTransactions     CoinTransaction[]
+  orders               Order[]                 @relation("StudentOrders")
+  goals                StudentGoal[]
+  parentLinks          ParentStudent[]
+
+  // Admin relations
+  handledOrders        Order[]                 @relation("AdminOrders")
+  penaltyBonusLogs     StaffPenaltyBonusLog[]
+  auditLogs            AuditLog[]
+}
+
+model Subject {
+  id          String   @id @default(cuid())
+  name        String   @unique // e.g. IT, Matematika, Ingliz tili
+  code        String?
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  groups      Group[]
+}
+
+model Group {
+  id           String        @id @default(cuid())
+  branchId     String
+  branch       Branch        @relation(fields: [branchId], references: [id])
+  subjectId    String
+  subject      Subject       @relation(fields: [subjectId], references: [id])
+  teacherId    String
+  teacher      User          @relation("TeacherGroups", fields: [teacherId], references: [id])
+  name         String        // e.g. IT-102
+  scheduleType ScheduleType  @default(ODD)
+  lessonTime   String        // e.g. "14:00 - 16:00"
+  room         String?       // e.g. "Xona 3"
+  status       String        @default("ACTIVE") // ACTIVE, ARCHIVED
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  students     StudentGroup[]
+  lessons      Lesson[]
+  monthlyCycles MonthlyCycle[]
+}
+
+model StudentGroup {
+  id                 String     @id @default(cuid())
+  studentId          String
+  student            User       @relation(fields: [studentId], references: [id])
+  groupId            String
+  group              Group      @relation(fields: [groupId], references: [id])
+  status             UserStatus @default(ACTIVE) // ACTIVE, TRANSFERRED, LEFT
+  monthlyTuitionPaid Boolean    @default(false)
+  joinedAt           DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  @@unique([studentId, groupId])
+}
+
+model Lesson {
+  id           String             @id @default(cuid())
+  groupId      String
+  group        Group              @relation(fields: [groupId], references: [id])
+  lessonNumber Int                // 1 to 12 regular lessons, 13 is exam day
+  isExam       Boolean            @default(false)
+  date         DateTime
+  status       String             @default("SCHEDULED") // SCHEDULED, COMPLETED
+  notes        String?
+  createdAt    DateTime           @default(now())
+
+  attendances  AttendanceRecord[]
+
+  @@unique([groupId, lessonNumber, date])
+}
+
+model AttendanceRecord {
+  id                  String   @id @default(cuid())
+  lessonId            String
+  lesson              Lesson   @relation(fields: [lessonId], references: [id])
+  studentId           String
+  student             User     @relation("StudentAttendances", fields: [studentId], references: [id])
+  isPresent           Boolean  @default(false)
+  attendanceScore     Int      @default(0) // 4 if isPresent, 0 if absent
+  homeworkScore       Int      @default(0) // 0 to 3, must be 0 if absent
+  activityScore       Int      @default(0) // 0 to 3, must be 0 if absent
+  examScore           Int      @default(0) // 0 to 40, only for isExam day
+  totalScore          Int      @default(0) // attendance + homework + activity + exam
+  recordedByTeacherId String
+  recordedByTeacher   User     @relation("TeacherRecordedAttendances", fields: [recordedByTeacherId], references: [id])
+  date                DateTime
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([lessonId, studentId])
+}
+
+model MonthlyCycle {
+  id                   String   @id @default(cuid())
+  studentId            String
+  student              User     @relation(fields: [studentId], references: [id])
+  groupId              String
+  group                Group    @relation(fields: [groupId], references: [id])
+  year                 Int
+  month                Int      // 1 to 12
+  regularLessonsScore  Int      @default(0) // sum of 12 lessons
+  examScore            Int      @default(0) // exam day score (0-40)
+  totalScore           Int      @default(0) // regular + exam
+  passed110            Boolean  @default(false) // true if totalScore >= 110
+  creditedCoins        Int      @default(0) // equal to totalScore if passed110, else 0
+  attendanceCount      Int      @default(0) // number of attended regular lessons
+  attendanceBonusCoins Int      @default(0) // 12 -> 100, 11 -> 80, 10 -> 60
+  referralBonusCoins   Int      @default(0) // +150 per referral
+  status               String   @default("IN_PROGRESS") // IN_PROGRESS, FINALIZED
+  finalizedAt          DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([studentId, groupId, year, month])
+}
+
+model CoinTransaction {
+  id          String          @id @default(cuid())
+  studentId   String
+  student     User            @relation(fields: [studentId], references: [id])
+  amount      Int             // positive or negative
+  type        TransactionType
+  description String
+  referenceId String?         // orderId, cycleId, etc.
+  createdAt   DateTime        @default(now())
+}
+
+model Product {
+  id            String   @id @default(cuid())
+  name          String
+  priceCoins    Int
+  stockQuantity Int      @default(0)
+  imageUrl      String?
+  description   String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  orders        Order[]
+  goals         StudentGoal[]
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  studentId       String
+  student         User        @relation("StudentOrders", fields: [studentId], references: [id])
+  productId       String
+  product         Product     @relation(fields: [productId], references: [id])
+  branchId        String
+  branch          Branch      @relation(fields: [branchId], references: [id])
+  coinsPaid       Int
+  status          OrderStatus @default(PENDING) // PENDING -> APPROVED -> DELIVERED (or CANCELLED)
+  cancelReason    String?
+  handledByUserId String?
+  handledByUser   User?       @relation("AdminOrders", fields: [handledByUserId], references: [id])
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+model StudentGoal {
+  id          String   @id @default(cuid())
+  studentId   String
+  student     User     @relation(fields: [studentId], references: [id])
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  isAchieved  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@unique([studentId, productId])
+}
+
+model StaffPenaltyBonusRule {
+  id           String           @id @default(cuid())
+  branchId     String?          // NULL for global rules
+  branch       Branch?          @relation(fields: [branchId], references: [id])
+  targetRole   Role             // TEACHER, ADMIN, BRANCH_HEAD
+  type         PenaltyBonusType // PENALTY, BONUS
+  code         String           // MISSED_ATTENDANCE, LOW_ATTENDANCE, etc.
+  title        String
+  description  String?
+  amountUzSum  Float            @default(0) // real money in UZS
+  threshold    Float?           // e.g. 85.0% for attendance
+  isActive     Boolean          @default(false) // Default inactive as per spec!
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  logs         StaffPenaltyBonusLog[]
+}
+
+model StaffPenaltyBonusLog {
+  id          String                 @id @default(cuid())
+  userId      String
+  user        User                   @relation(fields: [userId], references: [id])
+  ruleId      String?
+  rule        StaffPenaltyBonusRule? @relation(fields: [ruleId], references: [id])
+  type        PenaltyBonusType
+  amountUzSum Float
+  reason      String
+  month       Int
+  year        Int
+  isApproved  Boolean                @default(false)
+  createdAt   DateTime               @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  action     String   // CREATE, UPDATE, DELETE, STATUS_CHANGE
+  entityName String   // USER, ORDER, ATTENDANCE, RULE
+  entityId   String
+  details    String   // JSON or text explanation
+  createdAt  DateTime @default(now())
+}
+
+model Parent {
+  id             String          @id @default(cuid())
+  telegramChatId String          @unique
+  fullName       String
+  phone          String?
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+
+  children       ParentStudent[]
+  messages       TelegramLog[]
+}
+
+model ParentStudent {
+  id           String   @id @default(cuid())
+  parentId     String
+  parent       Parent   @relation(fields: [parentId], references: [id])
+  studentId    String
+  student      User     @relation(fields: [studentId], references: [id])
+  relationship String?  // Otasi, Onasi
+  createdAt    DateTime @default(now())
+
+  @@unique([parentId, studentId])
+}
+
+model TelegramLog {
+  id          String   @id @default(cuid())
+  parentId    String
+  parent      Parent   @relation(fields: [parentId], references: [id])
+  message     String
+  status      String   @default("SENT") // SENT, FAILED
+  sentAt      DateTime @default(now())
+}
