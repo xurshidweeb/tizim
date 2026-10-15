@@ -14,9 +14,10 @@
 # production
 /build
 
-# sqlite database
-prisma/*.db
+# sqlite database journals and temporary files
 prisma/*.db-journal
+prisma/*-wal
+prisma/*-shm
 
 # misc
 .DS_Store
